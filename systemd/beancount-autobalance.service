@@ -1,0 +1,13 @@
+[Unit]
+Description=Beancount Auto Balance daily run
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory={{REPO_PATH}}
+ExecStart={{UV_BIN}} run python src/main.py --config {{CONFIG_PATH}}
+Environment=PATH={{PATH}}
+
+[Install]
+WantedBy=default.target

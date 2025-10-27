@@ -1,0 +1,10 @@
+[Unit]
+Description=Schedule Beancount Auto Balance
+
+[Timer]
+OnCalendar={{ON_CALENDAR}}
+Persistent=true
+Unit={{SERVICE_UNIT}}
+
+[Install]
+WantedBy=timers.target
