@@ -1,5 +1,6 @@
 beancount_output: ./beancount_output.beancount
 default_currency: usd
+healthcheck_url: "https://hc-ping.com/<your-uuid>/beancount"
 bsc_endpoint: "https://bsc-mainnet.infura.io/v3/<your-project-id>"
 eth_endpoint: "https://mainnet.infura.io/v3/<your-project-id>"
 
