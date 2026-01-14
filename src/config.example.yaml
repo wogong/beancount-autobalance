@@ -5,8 +5,10 @@ bsc_endpoint: "https://bsc-mainnet.infura.io/v3/<your-project-id>"
 eth_endpoint: "https://mainnet.infura.io/v3/<your-project-id>"
 
 entries:
-  - date: 1
-    description: Monthly credit cards (bill day 1)
+  - dates:
+      - 1
+      - 15
+    description: Twice-monthly credit cards (bill days 1 and 15)
     accounts:
       - account: Liabilities:CreditCard:Example
         currency: CNY

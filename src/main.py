@@ -6,7 +6,7 @@ import argparse
 import asyncio
 import os
 import sys
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable
 
@@ -69,6 +69,14 @@ class HealthcheckNotifier:
         except Exception as exc:  # noqa: BLE001
             print(f"[warn] Healthcheck ping failed for {url}: {exc}", file=sys.stderr)
 
+
+def parse_iso_date(value: str) -> date:
+    try:
+        return date.fromisoformat(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"Invalid date value '{value}'; expected YYYY-MM-DD.") from exc
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Generate balance assertions for matching config entries.")
     parser.add_argument(
@@ -82,6 +90,14 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=None,
         help="Override beancount output file path.",
+    )
+    parser.add_argument(
+        "--date",
+        dest="dates",
+        action="extend",
+        type=parse_iso_date,
+        nargs="+",
+        help="ISO date(s) (YYYY-MM-DD) to process; may be provided multiple times.",
     )
     return parser.parse_args()
 
@@ -146,8 +162,12 @@ async def run_once() -> int:
 
     tz = auto_config.timezone
     current_time = datetime.now(tz) if tz else datetime.now()
+    requested_dates = getattr(args, "dates", None) or []
     try:
-        additions, errors = await manager.process_due_entries(now=current_time)
+        if requested_dates:
+            additions, errors = await manager.process_due_entries(target_dates=requested_dates)
+        else:
+            additions, errors = await manager.process_due_entries(now=current_time)
     except Exception:
         await healthcheck.notify_failure()
         raise
@@ -159,7 +179,8 @@ async def run_once() -> int:
     if additions:
         print(f"Wrote {len(additions)} balance assertion(s) to {output_path}")
     else:
-        print("No balance assertions written for today's date.")
+        scope_text = "the requested date(s)" if requested_dates else "today's date"
+        print(f"No balance assertions written for {scope_text}.")
 
     exit_code = 0 if not errors else 1
     if exit_code == 0:

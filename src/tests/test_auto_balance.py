@@ -4,7 +4,7 @@ import os
 import sys
 import textwrap
 from argparse import Namespace
-from datetime import datetime, time
+from datetime import date, datetime, time
 from decimal import Decimal
 from pathlib import Path
 
@@ -70,6 +70,24 @@ def test_auto_balance_config_uses_runtime_from_config():
     config = load_auto_balance_config(config_data, 'USD')
     assert config.runtime == time(5, 45)
 
+def test_auto_balance_config_supports_dates_key():
+    config_data = {
+        'auto_balance': {
+            'entries': [
+                {
+                    'dates': ['5', '2024-07-15'],
+                    'accounts': [{'account': 'Assets:Cash', 'currency': 'USD', 'balance': '0'}],
+                }
+            ]
+        }
+    }
+    config = load_auto_balance_config(config_data, 'USD')
+    assert len(config.entries) == 1
+    matcher_days = {matcher.day_of_month for matcher in config.entries[0].dates if matcher.day_of_month}
+    matcher_dates = {matcher.exact_date for matcher in config.entries[0].dates if matcher.exact_date}
+    assert 5 in matcher_days
+    assert date(2024, 7, 15) in matcher_dates
+
 
 def test_auto_balance_manager_appends_balance(tmp_path):
     config_data = {
@@ -132,6 +150,35 @@ def test_auto_balance_manager_uses_api_function(tmp_path):
     assert errors == []
     assert len(additions) == 1
     assert '0.12345678 BTC' in ledger_path.read_text(encoding='utf-8')
+
+
+def test_auto_balance_manager_processes_multiple_target_dates(tmp_path):
+    config_data = {
+        'auto_balance': {
+            'entries': [
+                {
+                    'dates': ['2024-07-14', '2024-07-15'],
+                    'accounts': [
+                        {'account': 'Assets:Cash', 'currency': 'USD', 'balance': '100.00'},
+                    ],
+                }
+            ]
+        }
+    }
+
+    config = load_auto_balance_config(config_data, 'USD')
+    ledger_path = tmp_path / 'multi.beancount'
+    manager = AutoBalanceManager(config=config, ledger_path=ledger_path, fetcher_registry=default_fetcher_registry())
+
+    additions, errors = asyncio.run(
+        manager.process_due_entries(target_dates=[date(2024, 7, 14), date(2024, 7, 15)])
+    )
+
+    assert errors == []
+    assert len(additions) == 2
+    contents = ledger_path.read_text(encoding='utf-8').splitlines()
+    assert contents[0].startswith('2024-07-14 balance Assets:Cash 100.00 USD')
+    assert contents[1].startswith('2024-07-15 balance Assets:Cash 100.00 USD')
 
 
 def test_fetch_bnb_balance_on_bsc_parses_rpc_response():

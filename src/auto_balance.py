@@ -92,43 +92,69 @@ class AutoBalanceManager:
     def __post_init__(self) -> None:
         self._last_processed: Dict[Tuple[str, str], date] = {}
 
-    async def process_due_entries(self, now: Optional[datetime] = None) -> Tuple[List[AutoBalanceResult], List[Tuple[AutoBalanceAccount, Exception]]]:
+    async def process_due_entries(
+        self,
+        now: Optional[datetime] = None,
+        target_dates: Optional[Sequence[date]] = None,
+    ) -> Tuple[List[AutoBalanceResult], List[Tuple[AutoBalanceAccount, Exception]]]:
         if not self.config.entries:
             return [], []
 
-        if now is None:
-            tz = self.config.timezone
-            now = datetime.now(tz) if tz else datetime.now()
+        dates_to_process: List[date] = []
+        if target_dates:
+            for candidate in target_dates:
+                if isinstance(candidate, datetime):
+                    dates_to_process.append(candidate.date())
+                elif isinstance(candidate, date):
+                    dates_to_process.append(candidate)
+                else:
+                    raise TypeError(f"Unsupported target date type: {type(candidate)!r}")
+        else:
+            if now is None:
+                tz = self.config.timezone
+                now = datetime.now(tz) if tz else datetime.now()
+            dates_to_process.append(now.date())
 
-        today = now.date()
+        if not dates_to_process:
+            return [], []
+
+        seen: Dict[str, None] = {}
+        ordered_dates: List[date] = []
+        for item in dates_to_process:
+            key = item.isoformat()
+            if key not in seen:
+                seen[key] = None
+                ordered_dates.append(item)
+
         additions: List[AutoBalanceResult] = []
         errors: List[Tuple[AutoBalanceAccount, Exception]] = []
 
-        for entry in self.config.entries:
-            if not entry.is_due(today):
-                continue
-            for account in entry.accounts:
-                key = (account.account, today.isoformat())
-                if self._last_processed.get(key) == today:
+        for target_date in ordered_dates:
+            for entry in self.config.entries:
+                if not entry.is_due(target_date):
                     continue
-                if self._has_existing_line(today, account.account):
-                    self._last_processed[key] = today
-                    continue
-                try:
-                    amount = await account.resolve_amount(self.fetcher_registry)
-                except Exception as exc:  # pragma: no cover
-                    errors.append((account, exc))
-                    continue
+                for account in entry.accounts:
+                    key = (account.account, target_date.isoformat())
+                    if self._last_processed.get(key) == target_date:
+                        continue
+                    if self._has_existing_line(target_date, account.account):
+                        self._last_processed[key] = target_date
+                        continue
+                    try:
+                        amount = await account.resolve_amount(self.fetcher_registry)
+                    except Exception as exc:  # pragma: no cover
+                        errors.append((account, exc))
+                        continue
 
-                line = format_balance_line(today, account, amount)
-                try:
-                    append_balance_line(self.ledger_path, line)
-                except Exception as exc:  # pragma: no cover
-                    errors.append((account, exc))
-                    continue
+                    line = format_balance_line(target_date, account, amount)
+                    try:
+                        append_balance_line(self.ledger_path, line)
+                    except Exception as exc:  # pragma: no cover
+                        errors.append((account, exc))
+                        continue
 
-                self._last_processed[key] = today
-                additions.append(AutoBalanceResult(account=account, amount=amount, line=line))
+                    self._last_processed[key] = target_date
+                    additions.append(AutoBalanceResult(account=account, amount=amount, line=line))
 
         return additions, errors
 
@@ -293,7 +319,14 @@ def load_auto_balance_config(config_data: Dict[str, Any], default_currency: str)
     for raw_entry in entries_data:
         if not isinstance(raw_entry, dict):
             continue
-        matchers = parse_date_matchers(raw_entry.get("date"))
+        raw_date_field: Any = raw_entry.get("date")
+        if "dates" in raw_entry:
+            dates_field = raw_entry.get("dates")
+            if raw_date_field is None:
+                raw_date_field = dates_field
+            else:
+                raw_date_field = [raw_date_field, dates_field]
+        matchers = parse_date_matchers(raw_date_field)
         if not matchers:
             continue
         accounts_data = raw_entry.get("accounts")
