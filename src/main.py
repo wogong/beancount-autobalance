@@ -10,6 +10,8 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable
 
+import urllib.request
+
 import yaml
 
 ROOT_DIR = Path(__file__).resolve().parent
@@ -23,6 +25,50 @@ ENV_KEY_SUFFIXES: Iterable[str] = (
     "_api_key",
     "_token",
 )
+
+HEALTHCHECK_TIMEOUT_SECONDS = 10
+HEALTHCHECK_USER_AGENT = "beancount-autobalance/1.0"
+
+
+class HealthcheckNotifier:
+    """Send success/failure notifications to a configured healthcheck endpoint."""
+
+    def __init__(self, base_url: Any) -> None:
+        url = str(base_url).strip() if base_url else ""
+        self.success_url: str | None = url or None
+        self.failure_url: str | None = None
+        if self.success_url:
+            stripped = self.success_url.rstrip("/")
+            self.failure_url = f"{stripped}/fail"
+
+    async def notify_success(self) -> None:
+        if self.success_url:
+            await self._ping(self.success_url)
+
+    async def notify_failure(self) -> None:
+        url = self.failure_url or self.success_url
+        if url:
+            await self._ping(url)
+
+    async def _ping(self, url: str) -> None:
+        try:
+            await asyncio.to_thread(self._ping_sync, url)
+        except RuntimeError:
+            self._ping_sync(url)
+
+    @staticmethod
+    def _ping_sync(url: str) -> None:
+        request = urllib.request.Request(
+            url,
+            headers={"User-Agent": HEALTHCHECK_USER_AGENT},
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=HEALTHCHECK_TIMEOUT_SECONDS) as response:
+                # Read a small amount to force the request to complete.
+                response.read(1)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[warn] Healthcheck ping failed for {url}: {exc}", file=sys.stderr)
+
 
 def parse_iso_date(value: str) -> date:
     try:
@@ -99,10 +145,12 @@ async def run_once() -> int:
     apply_env_overrides(config_data)
     output_path = resolve_output_path(config_data, args.output)
     default_currency = str(config_data.get("default_currency", "USD")).upper()
+    healthcheck = HealthcheckNotifier(config_data.get("healthcheck_url"))
 
     auto_config = load_auto_balance_config(config_data, default_currency=default_currency)
     if not auto_config.entries:
         print("No auto-balance entries configured; nothing to do.")
+        await healthcheck.notify_success()
         return 0
 
     auto_config.ledger = str(output_path)
@@ -115,29 +163,30 @@ async def run_once() -> int:
     tz = auto_config.timezone
     current_time = datetime.now(tz) if tz else datetime.now()
     requested_dates = getattr(args, "dates", None) or []
-    
-    exit_code = 0
     try:
         if requested_dates:
             additions, errors = await manager.process_due_entries(target_dates=requested_dates)
         else:
             additions, errors = await manager.process_due_entries(now=current_time)
-        
-        for account, exc in errors:
-            account_id = f"{account.account} ({account.currency})"
-            print(f"[error] Failed fetching {account_id}: {exc}", file=sys.stderr)
+    except Exception:
+        await healthcheck.notify_failure()
+        raise
 
-        if additions:
-            print(f"Wrote {len(additions)} balance assertion(s) to {output_path}")
-        else:
-            scope_text = "the requested date(s)" if requested_dates else "today's date"
-            print(f"No balance assertions written for {scope_text}.")
+    for account, exc in errors:
+        account_id = f"{account.account} ({account.currency})"
+        print(f"[error] Failed fetching {account_id}: {exc}", file=sys.stderr)
 
-        exit_code = 0 if not errors else 1
-    except Exception as exc:
-        print(f"[error] Unexpected error during processing: {exc}", file=sys.stderr)
-        exit_code = 1
-    
+    if additions:
+        print(f"Wrote {len(additions)} balance assertion(s) to {output_path}")
+    else:
+        scope_text = "the requested date(s)" if requested_dates else "today's date"
+        print(f"No balance assertions written for {scope_text}.")
+
+    exit_code = 0 if not errors else 1
+    if exit_code == 0:
+        await healthcheck.notify_success()
+    else:
+        await healthcheck.notify_failure()
     return exit_code
 
 
