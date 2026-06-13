@@ -153,7 +153,6 @@ async def run_once() -> int:
         await healthcheck.notify_success()
         return 0
 
-    auto_config.ledger = str(output_path)
     manager = AutoBalanceManager(
         config=auto_config,
         ledger_path=output_path,

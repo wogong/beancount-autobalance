@@ -4,7 +4,7 @@ import os
 import sys
 import textwrap
 from argparse import Namespace
-from datetime import date, datetime, time
+from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
 
@@ -24,6 +24,7 @@ from auto_balance import (
 from sources import (
     fetch_bnb_balance_on_bsc,
     fetch_eth_balance_on_ethereum,
+    fetch_token_balance,
     fetch_usdc_balance_on_bsc,
     fetch_usdc_balance_on_ethereum,
     fetch_usdt_balance_on_bsc,
@@ -40,46 +41,14 @@ def test_parse_date_matchers_supports_day_and_iso():
     assert any(m.exact_date == date(2024, 7, 15) for m in matchers)
 
 
-def test_auto_balance_config_defaults_runtime():
-    config_data = {
-        'auto_balance': {
-            'entries': [
-                {
-                    'date': 5,
-                    'accounts': [{'account': 'Assets:Cash', 'currency': 'USD', 'balance': '0'}],
-                }
-            ]
-        }
-    }
-    config = load_auto_balance_config(config_data, 'USD')
-    assert config.runtime == time(1, 0)
-
-
-def test_auto_balance_config_uses_runtime_from_config():
-    config_data = {
-        'auto_balance': {
-            'runtime': '05:45',
-            'entries': [
-                {
-                    'date': 5,
-                    'accounts': [{'account': 'Assets:Cash', 'currency': 'USD', 'balance': '0'}],
-                }
-            ]
-        }
-    }
-    config = load_auto_balance_config(config_data, 'USD')
-    assert config.runtime == time(5, 45)
-
 def test_auto_balance_config_supports_dates_key():
     config_data = {
-        'auto_balance': {
-            'entries': [
-                {
-                    'dates': ['5', '2024-07-15'],
-                    'accounts': [{'account': 'Assets:Cash', 'currency': 'USD', 'balance': '0'}],
-                }
-            ]
-        }
+        'entries': [
+            {
+                'dates': ['5', '2024-07-15'],
+                'accounts': [{'account': 'Assets:Cash', 'currency': 'USD', 'balance': '0'}],
+            }
+        ]
     }
     config = load_auto_balance_config(config_data, 'USD')
     assert len(config.entries) == 1
@@ -89,18 +58,66 @@ def test_auto_balance_config_supports_dates_key():
     assert date(2024, 7, 15) in matcher_dates
 
 
+def test_crypto_shorthand_expands_accounts():
+    config_data = {
+        'entries': [
+            {
+                'dates': [7, 14],
+                'crypto': {
+                    'wallets': {
+                        'XCF98': {'address': '0xcf98', 'holdings': {'bsc': ['BNB', 'USDT', 'USDC']}},
+                        'X30eE': {'address': '0x30ee', 'holdings': {'bsc': ['BNB', 'USDT', 'USDC']}},
+                    },
+                },
+            }
+        ]
+    }
+    config = load_auto_balance_config(config_data, 'CNY')
+    accounts = config.entries[0].accounts
+
+    assert [a.account for a in accounts] == [
+        'Assets:Investments:Crypto:Wallet:XCF98:BSC:BNB',
+        'Assets:Investments:Crypto:Wallet:XCF98:BSC:USDT',
+        'Assets:Investments:Crypto:Wallet:XCF98:BSC:USDC',
+        'Assets:Investments:Crypto:Wallet:X30eE:BSC:BNB',
+        'Assets:Investments:Crypto:Wallet:X30eE:BSC:USDT',
+        'Assets:Investments:Crypto:Wallet:X30eE:BSC:USDC',
+    ]
+    bnb = accounts[0]
+    assert bnb.currency == 'BNB'
+    assert bnb.precision == 6
+    assert bnb.api_function == 'sources.fetch_token_balance'
+    assert bnb.args == {'token': 'BNB', 'chain': 'bsc', 'address': '0xcf98'}
+    assert accounts[1].precision == 2  # stablecoin
+
+
+def test_fetch_token_balance_routes_native_and_erc20():
+    captured = {}
+
+    def open_stub(req, timeout):
+        captured['body'] = json.loads(req.data.decode('utf-8'))
+        return _dummy_rpc_response(hex(10 ** 18))
+
+    # Native coin -> eth_getBalance against the wallet address.
+    fetch_token_balance('BNB', 'bsc', '0xabc', api_key='key', opener=open_stub)
+    assert captured['body']['method'] == 'eth_getBalance'
+
+    # ERC-20 -> eth_call against the token contract.
+    fetch_token_balance('USDT', 'bsc', '0xabc', api_key='key', opener=open_stub)
+    assert captured['body']['method'] == 'eth_call'
+    assert captured['body']['params'][0]['to'].lower() == '0x55d398326f99059ff775485246999027b3197955'
+
+
 def test_auto_balance_manager_appends_balance(tmp_path):
     config_data = {
-        'auto_balance': {
-            'entries': [
-                {
-                    'date': 15,
-                    'accounts': [
-                        {'account': 'Assets:Cash', 'currency': 'USD', 'balance': '0'},
-                    ],
-                }
-            ]
-        }
+        'entries': [
+            {
+                'date': 15,
+                'accounts': [
+                    {'account': 'Assets:Cash', 'currency': 'USD', 'balance': '0'},
+                ],
+            }
+        ]
     }
     config = load_auto_balance_config(config_data, 'USD')
     ledger_path = tmp_path / 'auto.beancount'
@@ -122,22 +139,20 @@ def test_auto_balance_manager_uses_api_function(tmp_path):
         return value
 
     config_data = {
-        'auto_balance': {
-            'entries': [
-                {
-                    'date': '01',
-                    'accounts': [
-                        {
-                            'account': 'Assets:Crypto:Wallet',
-                            'currency': 'BTC',
-                            'api_function': 'dummy',
-                            'args': {'value': '0.12345678'},
-                            'precision': 8,
-                        }
-                    ],
-                }
-            ]
-        }
+        'entries': [
+            {
+                'date': '01',
+                'accounts': [
+                    {
+                        'account': 'Assets:Crypto:Wallet',
+                        'currency': 'BTC',
+                        'api_function': 'dummy',
+                        'args': {'value': '0.12345678'},
+                        'precision': 8,
+                    }
+                ],
+            }
+        ]
     }
 
     config = load_auto_balance_config(config_data, 'USD')
@@ -154,16 +169,14 @@ def test_auto_balance_manager_uses_api_function(tmp_path):
 
 def test_auto_balance_manager_processes_multiple_target_dates(tmp_path):
     config_data = {
-        'auto_balance': {
-            'entries': [
-                {
-                    'dates': ['2024-07-14', '2024-07-15'],
-                    'accounts': [
-                        {'account': 'Assets:Cash', 'currency': 'USD', 'balance': '100.00'},
-                    ],
-                }
-            ]
-        }
+        'entries': [
+            {
+                'dates': ['2024-07-14', '2024-07-15'],
+                'accounts': [
+                    {'account': 'Assets:Cash', 'currency': 'USD', 'balance': '100.00'},
+                ],
+            }
+        ]
     }
 
     config = load_auto_balance_config(config_data, 'USD')

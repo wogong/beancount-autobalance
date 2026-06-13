@@ -3,16 +3,15 @@ from __future__ import annotations
 
 import inspect
 from dataclasses import dataclass, field
-from datetime import date, datetime, time
+from datetime import date, datetime
 from decimal import Decimal
 from importlib import import_module
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from zoneinfo import ZoneInfo
 
 DEFAULT_PRECISION = 2
-DEFAULT_RUNTIME = time(hour=1, minute=0)
 
 
 @dataclass(frozen=True)
@@ -68,12 +67,7 @@ class AutoBalanceEntry:
 @dataclass
 class AutoBalanceConfig:
     entries: Sequence[AutoBalanceEntry]
-    timezone: Optional[ZoneInfo]
-    runtime: time = DEFAULT_RUNTIME
-    ledger: Optional[str] = None
-
-    def has_entries(self) -> bool:
-        return bool(self.entries)
+    timezone: Optional[ZoneInfo] = None
 
 
 @dataclass
@@ -90,7 +84,7 @@ class AutoBalanceManager:
     fetcher_registry: Dict[str, Callable[..., Any]]
 
     def __post_init__(self) -> None:
-        self._last_processed: Dict[Tuple[str, str], date] = {}
+        self._processed: set[Tuple[str, str]] = set()
 
     async def process_due_entries(
         self,
@@ -135,10 +129,10 @@ class AutoBalanceManager:
                     continue
                 for account in entry.accounts:
                     key = (account.account, target_date.isoformat())
-                    if self._last_processed.get(key) == target_date:
+                    if key in self._processed:
                         continue
                     if self._has_existing_line(target_date, account.account):
-                        self._last_processed[key] = target_date
+                        self._processed.add(key)
                         continue
                     try:
                         amount = await account.resolve_amount(self.fetcher_registry)
@@ -153,7 +147,7 @@ class AutoBalanceManager:
                         errors.append((account, exc))
                         continue
 
-                    self._last_processed[key] = target_date
+                    self._processed.add(key)
                     additions.append(AutoBalanceResult(account=account, amount=amount, line=line))
 
         return additions, errors
@@ -272,75 +266,39 @@ def parse_account(entry: Dict[str, Any], default_currency: str) -> Optional[Auto
 
 def load_auto_balance_config(config_data: Dict[str, Any], default_currency: str) -> AutoBalanceConfig:
     default_currency = str(default_currency).strip().upper()
-    root_dict: Dict[str, Any] = config_data if isinstance(config_data, dict) else {}
-    section_candidate = root_dict.get("auto_balance")
-    if isinstance(section_candidate, (dict, list)) and section_candidate:
-        section: Union[Dict[str, Any], List[Dict[str, Any]]] = section_candidate
-    else:
-        section = root_dict
-    timezone = None
-    ledger = None
-    runtime = DEFAULT_RUNTIME
-    entries_data: Iterable[Dict[str, Any]] = []
 
-    if isinstance(section, dict):
-        timezone_name = section.get("timezone")
-        if not timezone_name and root_dict is not section:
-            timezone_name = root_dict.get("timezone")
-        if timezone_name:
-            try:
-                timezone = ZoneInfo(timezone_name)
-            except Exception:
-                timezone = None
-        runtime_value = section.get("runtime")
-        if runtime_value is None and root_dict is not section:
-            runtime_value = root_dict.get("runtime")
-        runtime = coerce_runtime(runtime_value)
-        ledger_value = section.get("ledger")
-        if not ledger_value and root_dict is not section:
-            ledger_value = root_dict.get("ledger") or root_dict.get("beancount_output")
-        if isinstance(ledger_value, str) and ledger_value.strip():
-            ledger = ledger_value.strip()
-        entries_data = section.get("entries") or []
-    elif isinstance(section, list):
-        entries_data = section
-        ledger_value = root_dict.get("ledger") or root_dict.get("beancount_output")
-        if isinstance(ledger_value, str) and ledger_value.strip():
-            ledger = ledger_value.strip()
-        runtime = coerce_runtime(root_dict.get("runtime"))
-        timezone_name = root_dict.get("timezone")
-        if timezone_name:
-            try:
-                timezone = ZoneInfo(timezone_name)
-            except Exception:
-                timezone = None
+    timezone = None
+    timezone_name = config_data.get("timezone")
+    if timezone_name:
+        try:
+            timezone = ZoneInfo(timezone_name)
+        except Exception:
+            timezone = None
 
     entries: List[AutoBalanceEntry] = []
-    for raw_entry in entries_data:
+    for raw_entry in config_data.get("entries") or []:
         if not isinstance(raw_entry, dict):
             continue
-        raw_date_field: Any = raw_entry.get("date")
-        if "dates" in raw_entry:
-            dates_field = raw_entry.get("dates")
-            if raw_date_field is None:
-                raw_date_field = dates_field
-            else:
-                raw_date_field = [raw_date_field, dates_field]
-        matchers = parse_date_matchers(raw_date_field)
+        matchers = parse_date_matchers(_entry_date_field(raw_entry))
         if not matchers:
             continue
         accounts_data = raw_entry.get("accounts")
         if isinstance(accounts_data, dict):
             accounts_data = [accounts_data]
         if not isinstance(accounts_data, list):
+            accounts_data = []
+        crypto = raw_entry.get("crypto")
+        if isinstance(crypto, dict):
+            accounts_data = list(accounts_data) + _expand_crypto(crypto)
+        if not accounts_data:
             continue
-        accounts: List[AutoBalanceAccount] = []
-        for account_entry in accounts_data:
-            if not isinstance(account_entry, dict):
-                continue
-            account = parse_account(account_entry, default_currency)
-            if account:
-                accounts.append(account)
+        accounts = [
+            account
+            for account in (
+                parse_account(item, default_currency) for item in accounts_data if isinstance(item, dict)
+            )
+            if account
+        ]
         if not accounts:
             continue
         entries.append(
@@ -351,24 +309,60 @@ def load_auto_balance_config(config_data: Dict[str, Any], default_currency: str)
             )
         )
 
-    return AutoBalanceConfig(entries=entries, timezone=timezone, runtime=runtime, ledger=ledger)
+    return AutoBalanceConfig(entries=entries, timezone=timezone)
+
+
+CRYPTO_PREFIX = "Assets:Investments:Crypto:Wallet"
+# Ledger display precision per token; native coins keep more decimals than stablecoins.
+_CRYPTO_PRECISION = {"BNB": 6, "ETH": 6}
+_DEFAULT_CRYPTO_PRECISION = 2
+
+
+def _expand_crypto(crypto: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Expand a `crypto` shorthand block into per-(wallet, chain, token) account dicts.
+
+    Each wallet carries its own address and holdings:
+        crypto:
+          prefix: Assets:Investments:Crypto:Wallet   # optional
+          wallets:
+            LABEL:
+              address: 0x...
+              holdings: {chain: [TOKEN, ...], ...}
+    """
+    prefix = str(crypto.get("prefix") or CRYPTO_PREFIX).rstrip(":")
+    wallets = crypto.get("wallets") or {}
+
+    accounts: List[Dict[str, Any]] = []
+    for label, spec in wallets.items():
+        if not isinstance(spec, dict):
+            continue
+        address = spec.get("address")
+        holdings = spec.get("holdings") or {}
+        for chain, tokens in holdings.items():
+            for token in tokens or []:
+                token = str(token).upper()
+                accounts.append(
+                    {
+                        "account": f"{prefix}:{label}:{str(chain).upper()}:{token}",
+                        "currency": token,
+                        "api_function": "sources.fetch_token_balance",
+                        "args": {"token": token, "chain": str(chain), "address": address},
+                        "precision": _CRYPTO_PRECISION.get(token, _DEFAULT_CRYPTO_PRECISION),
+                    }
+                )
+    return accounts
+
+
+def _entry_date_field(raw_entry: Dict[str, Any]) -> Any:
+    """Merge the `date` and `dates` keys of an entry into a single value for matching."""
+    raw_date = raw_entry.get("date")
+    if "dates" not in raw_entry:
+        return raw_date
+    dates_field = raw_entry.get("dates")
+    return dates_field if raw_date is None else [raw_date, dates_field]
 
 
 def default_fetcher_registry() -> Dict[str, Callable[..., Any]]:
     return {
         "constant": lambda value="0", **_: Decimal(str(value)),
     }
-
-
-def coerce_runtime(value: Any) -> time:
-    if isinstance(value, time):
-        return value.replace(tzinfo=None)
-    if isinstance(value, str):
-        stripped = value.strip()
-        if stripped:
-            try:
-                parsed = time.fromisoformat(stripped)
-                return parsed.replace(tzinfo=None)
-            except ValueError:
-                pass
-    return DEFAULT_RUNTIME
