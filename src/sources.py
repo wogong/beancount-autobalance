@@ -72,7 +72,11 @@ def _fetch_evm_balance(
     }
 
     opener_fn = opener or request.urlopen
-    req = request.Request(url, data=json.dumps(payload).encode("utf-8"), headers={"Content-Type": "application/json"})
+    req = request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json", "User-Agent": "beancount-autobalance/1.0"},
+    )
     with opener_fn(req, timeout=timeout) as response:
         raw = response.read()
 

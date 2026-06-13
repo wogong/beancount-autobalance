@@ -324,12 +324,17 @@ def _expand_crypto(crypto: Dict[str, Any]) -> List[Dict[str, Any]]:
     Each wallet carries its own address and holdings:
         crypto:
           prefix: Assets:Investments:Crypto:Wallet   # optional
+          chains: {eth: Ethereum, ...}               # optional chain -> account segment
           wallets:
             LABEL:
               address: 0x...
               holdings: {chain: [TOKEN, ...], ...}
+
+    The account segment for a chain defaults to its uppercased key (bsc -> BSC);
+    override it via `chains` (e.g. eth -> Ethereum) to match existing account names.
     """
     prefix = str(crypto.get("prefix") or CRYPTO_PREFIX).rstrip(":")
+    chain_labels = crypto.get("chains") or {}
     wallets = crypto.get("wallets") or {}
 
     accounts: List[Dict[str, Any]] = []
@@ -339,11 +344,12 @@ def _expand_crypto(crypto: Dict[str, Any]) -> List[Dict[str, Any]]:
         address = spec.get("address")
         holdings = spec.get("holdings") or {}
         for chain, tokens in holdings.items():
+            segment = str(chain_labels.get(chain, str(chain).upper()))
             for token in tokens or []:
                 token = str(token).upper()
                 accounts.append(
                     {
-                        "account": f"{prefix}:{label}:{str(chain).upper()}:{token}",
+                        "account": f"{prefix}:{label}:{segment}:{token}",
                         "currency": token,
                         "api_function": "sources.fetch_token_balance",
                         "args": {"token": token, "chain": str(chain), "address": address},
