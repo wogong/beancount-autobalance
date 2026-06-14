@@ -349,7 +349,7 @@ def load_auto_balance_config(config_data: Dict[str, Any], default_currency: str)
 
 CRYPTO_PREFIX = "Assets:Investments:Crypto:Wallet"
 # Ledger display precision per token; native coins keep more decimals than stablecoins.
-_CRYPTO_PRECISION = {"BNB": 6, "ETH": 6, "POL": 6}
+_CRYPTO_PRECISION = {"BNB": 6, "ETH": 6}
 _DEFAULT_CRYPTO_PRECISION = 2
 
 
