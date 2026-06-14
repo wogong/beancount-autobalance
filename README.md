@@ -70,7 +70,7 @@ Token resolution lives in the `_TOKENS` registry in `src/sources.py`, keyed by `
 | `bsc` | BNB | USDT, USDC |
 | `eth` / `ethereum` | ETH | USDT, USDC |
 | `polygon` | POL | ETH (bridged WETH), USDT, USDC (native, not USDC.e) |
-| `base` | ETH | USDC |
+| `base` | ETH | USDT, USDC |
 
 To add a token on a chain, add one row to `_TOKENS`. To add a whole chain, also add an entry to `_CHAINS` (its endpoint env var and a default URL template).
 
