@@ -134,6 +134,55 @@ def test_auto_balance_manager_appends_balance(tmp_path):
     assert second_run == []
 
 
+def test_auto_balance_manager_skips_unchanged_balance(tmp_path):
+    config_data = {
+        'entries': [
+            {
+                'dates': ['2024-07-14', '2024-07-21'],
+                'accounts': [
+                    {'account': 'Assets:Cash', 'currency': 'USD', 'balance': '100.00'},
+                ],
+            }
+        ]
+    }
+    config = load_auto_balance_config(config_data, 'USD')
+    ledger_path = tmp_path / 'unchanged.beancount'
+    manager = AutoBalanceManager(config=config, ledger_path=ledger_path, fetcher_registry=default_fetcher_registry())
+
+    first, _ = asyncio.run(manager.process_due_entries(target_dates=[date(2024, 7, 14)]))
+    assert len(first) == 1
+
+    # Same value on a later date -> no new assertion appended.
+    second, errors = asyncio.run(manager.process_due_entries(target_dates=[date(2024, 7, 21)]))
+    assert errors == []
+    assert second == []
+    contents = ledger_path.read_text(encoding='utf-8').splitlines()
+    assert len([line for line in contents if line.strip()]) == 1
+
+
+def test_auto_balance_manager_appends_when_balance_changes(tmp_path):
+    ledger_path = tmp_path / 'changed.beancount'
+    ledger_path.write_text('2024-07-14 balance Assets:Cash 100.00 USD\n', encoding='utf-8')
+
+    config_data = {
+        'entries': [
+            {
+                'date': 21,
+                'accounts': [
+                    {'account': 'Assets:Cash', 'currency': 'USD', 'balance': '150.00'},
+                ],
+            }
+        ]
+    }
+    config = load_auto_balance_config(config_data, 'USD')
+    manager = AutoBalanceManager(config=config, ledger_path=ledger_path, fetcher_registry=default_fetcher_registry())
+
+    additions, errors = asyncio.run(manager.process_due_entries(now=datetime(2024, 7, 21, 0, 0, 0)))
+    assert errors == []
+    assert len(additions) == 1
+    assert '2024-07-21 balance Assets:Cash 150.00 USD' in ledger_path.read_text(encoding='utf-8')
+
+
 def test_auto_balance_manager_uses_api_function(tmp_path):
     def dummy_fetcher(value):
         return value
@@ -188,10 +237,10 @@ def test_auto_balance_manager_processes_multiple_target_dates(tmp_path):
     )
 
     assert errors == []
-    assert len(additions) == 2
-    contents = ledger_path.read_text(encoding='utf-8').splitlines()
-    assert contents[0].startswith('2024-07-14 balance Assets:Cash 100.00 USD')
-    assert contents[1].startswith('2024-07-15 balance Assets:Cash 100.00 USD')
+    # Both dates are visited, but the second repeats the same balance and is skipped.
+    assert len(additions) == 1
+    contents = [line for line in ledger_path.read_text(encoding='utf-8').splitlines() if line.strip()]
+    assert contents == ['2024-07-14 balance Assets:Cash 100.00 USD']
 
 
 def test_fetch_bnb_balance_on_bsc_parses_rpc_response():

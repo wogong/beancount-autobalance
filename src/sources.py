@@ -12,6 +12,7 @@ _CHAINS = {
     "bsc": ("BSC_ENDPOINT", "https://bsc-mainnet.infura.io/v3/{api_key}"),
     "ethereum": ("ETH_ENDPOINT", "https://mainnet.infura.io/v3/{api_key}"),
     "base": ("BASE_ENDPOINT", "https://base-mainnet.infura.io/v3/{api_key}"),
+    "polygon": ("POLYGON_ENDPOINT", "https://polygon-mainnet.infura.io/v3/{api_key}"),
 }
 
 # Short chain names accepted in config -> canonical _CHAINS key.
@@ -28,6 +29,11 @@ _TOKENS = {
     ("USDC", "ethereum"): ("0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eb48", 6),
     ("ETH", "base"): (None, 18),
     ("USDC", "base"): ("0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", 6),
+    # Polygon: native coin is POL; "ETH" is bridged WETH; USDC is native (not USDC.e).
+    ("POL", "polygon"): (None, 18),
+    ("ETH", "polygon"): ("0x7ceB23fD6bC0adD59E62ac25578270cFf1b9f619", 18),
+    ("USDT", "polygon"): ("0xc2132D05D31c914a87C6611C10748AEb04B58e8F", 6),
+    ("USDC", "polygon"): ("0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359", 6),
 }
 
 # ERC-20 balanceOf(address) selector.

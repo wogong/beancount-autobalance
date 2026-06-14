@@ -1,53 +1,43 @@
 beancount_output: ./beancount_output.beancount
 default_currency: usd
 healthcheck_url: "https://hc-ping.com/<your-uuid>/beancount"
-bsc_endpoint: "https://bsc-mainnet.infura.io/v3/<your-project-id>"
-eth_endpoint: "https://mainnet.infura.io/v3/<your-project-id>"
+
+# RPC endpoints, exported to <NAME>_ENDPOINT env vars before fetchers run.
+# Keyless public nodes work out of the box; Infura-style URLs need an api_key.
+bsc_endpoint: "https://bsc-rpc.publicnode.com"
+eth_endpoint: "https://ethereum-rpc.publicnode.com"
+polygon_endpoint: "https://polygon-bor-rpc.publicnode.com"
+base_endpoint: "https://base-rpc.publicnode.com"
 
 entries:
-  - dates:
-      - 1
-      - 15
+  # 1) Plain account: an assertion is appended on the matching day(s). With no
+  #    api_function the static `balance` is used; accounts default to
+  #    default_currency, so only non-default ones need `currency`.
+  - dates: [1, 15]
     description: Twice-monthly credit cards (bill days 1 and 15)
     accounts:
       - account: Liabilities:CreditCard:Example
-        currency: CNY
         balance: "-0.00"
-  - date: 15
-    accounts:
-      - account: Assets:Crypto:Wallet
-        currency: BTC
-        api_function: sources.fetch_wallet_balance
-        args:
-          address: "0xabc..."
-          precision: 8
-      - account: Assets:Crypto:BNBWallet
-        currency: BNB
-        api_function: sources.fetch_bnb_balance_on_bsc
-        args:
-          address: "0xabc..."
-      - account: Assets:Crypto:BNBWallet:USDT
-        currency: USDT
-        api_function: sources.fetch_usdt_balance_on_bsc
-        args:
-          address: "0xabc..."
-      - account: Assets:Crypto:BNBWallet:USDC
-        currency: USDC
-        api_function: sources.fetch_usdc_balance_on_bsc
-        args:
-          address: "0xabc..."
-      - account: Assets:Crypto:ETHWallet
-        currency: ETH
-        api_function: sources.fetch_eth_balance_on_ethereum
-        args:
-          address: "0xabc..."
-      - account: Assets:Crypto:ETHWallet:USDT
-        currency: USDT
-        api_function: sources.fetch_usdt_balance_on_ethereum
-        args:
-          address: "0xabc..."
-      - account: Assets:Crypto:ETHWallet:USDC
-        currency: USDC
-        api_function: sources.fetch_usdc_balance_on_ethereum
-        args:
-          address: "0xabc..."
+      - account: Liabilities:CreditCard:USDExample
+        currency: USD
+
+  # 2) Crypto shorthand: expands into one account per (wallet, chain, token),
+  #    each fetched live from the chain. Account names become
+  #    <prefix>:<LABEL>:<CHAIN-SEGMENT>:<TOKEN>. Add a holding by adding one word.
+  - dates: [7, 14, 21, 28]
+    description: Weekly crypto balances
+    crypto:
+      # prefix: Assets:Investments:Crypto:Wallet   # optional; this is the default
+      # chain key -> account-name segment (defaults to UPPERCASE, e.g. bsc -> BSC)
+      chains:
+        eth: Ethereum
+        base: Base
+        polygon: Polygon
+      wallets:
+        MAIN:
+          address: "0xYourWalletAddress"
+          holdings:
+            bsc: [BNB, USDT, USDC]
+            eth: [ETH, USDT, USDC]
+            polygon: [POL, USDC]
+            # base: [ETH, USDC]

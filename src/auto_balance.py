@@ -140,6 +140,10 @@ class AutoBalanceManager:
                         errors.append((account, exc))
                         continue
 
+                    if self._is_unchanged(account, amount):
+                        self._processed.add(key)
+                        continue
+
                     line = format_balance_line(target_date, account, amount)
                     try:
                         append_balance_line(self.ledger_path, line)
@@ -151,6 +155,37 @@ class AutoBalanceManager:
                     additions.append(AutoBalanceResult(account=account, amount=amount, line=line))
 
         return additions, errors
+
+    def _is_unchanged(self, account: AutoBalanceAccount, amount: Decimal) -> bool:
+        """True when ``amount`` matches the account's most recent balance assertion."""
+        last = self._last_balance(account.account)
+        if last is None:
+            return False
+        prev_amount, prev_currency = last
+        return prev_currency == account.currency and prev_amount == Decimal(account.format_amount(amount))
+
+    def _last_balance(self, account_name: str) -> Optional[Tuple[Decimal, str]]:
+        """Return the (amount, currency) of the most recent balance assertion for the account."""
+        if not self.ledger_path.exists():
+            return None
+        needle = f"balance {account_name} "
+        last: Optional[Tuple[Decimal, str]] = None
+        try:
+            with self.ledger_path.open("r", encoding="utf-8") as ledger:
+                for raw_line in ledger:
+                    idx = raw_line.find(needle)
+                    if idx == -1:
+                        continue
+                    parts = raw_line[idx + len(needle):].split()
+                    if len(parts) < 2:
+                        continue
+                    try:
+                        last = (Decimal(parts[0]), parts[1])
+                    except Exception:
+                        continue
+        except FileNotFoundError:
+            return None
+        return last
 
     def _has_existing_line(self, target_date: date, account_name: str) -> bool:
         prefix = f"{target_date.isoformat()} balance {account_name}"
@@ -314,7 +349,7 @@ def load_auto_balance_config(config_data: Dict[str, Any], default_currency: str)
 
 CRYPTO_PREFIX = "Assets:Investments:Crypto:Wallet"
 # Ledger display precision per token; native coins keep more decimals than stablecoins.
-_CRYPTO_PRECISION = {"BNB": 6, "ETH": 6}
+_CRYPTO_PRECISION = {"BNB": 6, "ETH": 6, "POL": 6}
 _DEFAULT_CRYPTO_PRECISION = 2
 
 
